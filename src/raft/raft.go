@@ -20,6 +20,8 @@ package raft
 import "sync"
 import "sync/atomic"
 import "../labrpc"
+import "time"
+import "math/rand"
 
 // import "bytes"
 // import "../labgob"
@@ -43,30 +45,90 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+func (rf *Raft) newFollowertimer () {
+	rf.muFollowertimer.Lock()
+	rf.followertimer = time.NewTimer(time.Millisecond * time.Duration((300 + rand.Intn(500))))
+	rf.muFollowertimer.Unlock()
+}
+
+func (rf *Raft) delFollowertimer () {
+	rf.muFollowertimer.Lock()
+	rf.followertimer = nil
+	rf.muFollowertimer.Unlock()
+}
+
+func (rf *Raft) resetFollowertimer () {
+	rf.muFollowertimer.Lock()
+	if rf.followertimer != nil {
+		rf.followertimer.Stop()
+		rf.followertimer.Reset(time.Millisecond * time.Duration((300 + rand.Intn(500))))
+	}
+	rf.muFollowertimer.Unlock()
+}
+
+func (rf *Raft) newCadidatetimer () {
+	rf.muCadidatetimer.Lock()
+	rf.cadidatetimer = time.NewTimer(time.Millisecond * time.Duration((300 + rand.Intn(500))))
+	rf.muCadidatetimer.Unlock()
+}
+
+func (rf *Raft) delCadidatetimer () {
+	rf.muCadidatetimer.Lock()
+	rf.cadidatetimer = nil
+	rf.muCadidatetimer.Unlock()
+}
+
+func (rf *Raft) resetCadidatetimer () {
+	rf.muCadidatetimer.Lock()
+	if rf.cadidatetimer != nil {
+		rf.cadidatetimer.Stop()
+		rf.cadidatetimer.Reset(time.Millisecond * time.Duration((300 + rand.Intn(500))))
+	}
+	rf.muCadidatetimer.Unlock()
+}
+
+func (rf *Raft) gooffCadidatetimer () {
+	rf.muCadidatetimer.Lock()
+	if rf.cadidatetimer != nil {
+		rf.cadidatetimer.Stop()
+		rf.cadidatetimer.Reset(0)
+	}
+	rf.muCadidatetimer.Unlock()
+}
 //
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	// volatile states
+	rwmu      sync.RWMutex
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
+	state     int                 // 0 for follower, 1 for candidate, 2 for leader (I am not sure if this is carrect cause this is not on the paper)
 
-	// Your data here (2A, 2B, 2C).
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
+	// persistent states
+	currentTerm int               // latest term server has seen (initialized to 0 on first boot, increases monotonically)
+	voteFor     int               // candidateId(peers index) that received vote in current term (or -1 if none)
 
+	// others previously declared as global var
+	muVote sync.Mutex
+	voteCount int // how many votes a candidate has receive
+	voterCount int // how many other servers the candidate has succeccfully made contact
+
+	muFollowertimer sync.Mutex
+	followertimer *time.Timer // goes off if a follower receives no communication over a period of time
+	muCadidatetimer sync.Mutex
+	cadidatetimer *time.Timer // goes off if a candidate neither win or lose an election over a period of time
+								// or it will goes off imimmediately if the server win or lose this election
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	var term int
-	var isleader bool
-	// Your code here (2A).
-	return term, isleader
+	rf.rwmu.RLock()
+	defer rf.rwmu.RUnlock()
+	return rf.currentTerm, rf.state == 2
 }
 
 //
@@ -108,15 +170,106 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
+//
+// return true if another server is more up to date than myself
+//
+func (rf *Raft) upToDateDiscover() bool {
+	return true
+}
 
+type AppendEntriesArgs struct {
+	LeaderID int
+	Term int // leader's term
 
+}
+
+type AppendEntriesReply struct {
+	Term int // currentTerm, for leader to update itself
+	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.resetFollowertimer()
+	rf.rwmu.Lock()
+	defer rf.rwmu.Unlock()
+	if rf.state == 0 { // currently follower
+		if rf.currentTerm <= args.Term {
+			if rf.currentTerm < args.Term {
+				rf.voteFor = -1
+			}
+			rf.currentTerm = args.Term
+			// if legal {
+			//  reply.success = true
+			// 	append logs
+			// } else {
+			// 	reply.success = false
+			// }
+		} else {
+			reply.Term = rf.currentTerm
+			reply.Success = false
+		}
+	} else if rf.state == 1 { // currently candidate
+		if rf.currentTerm <= args.Term {
+			if rf.currentTerm < args.Term {
+				rf.voteFor = -1
+			}
+			rf.state = 0 // change to a follower
+			rf.currentTerm = args.Term
+			reply.Success = false // since i am currently a candidate, I am going to ignore the log entries this rpc is currying, even if it is legal for me to append the log entries
+			rf.gooffCadidatetimer() // timer in the candidate() goes off immediately, so leave candidate() immediately
+		} else {
+			reply.Term = rf.currentTerm
+			reply.Success = false
+		}
+	} else { // currently leader
+		if rf.currentTerm <= args.Term { // actually it's impossible to have 2 leader (I and the rpc sender) with the same term (=)
+			rf.state = 0 // change to a follower
+			rf.currentTerm = args.Term
+			rf.voteFor = -1
+			reply.Success = false // since i am currently a leader, I am going to ignore the log entries this rpc is currying, even if it is legal for me to append the log entries
+			// i can not leave leader() immediately, because i might be in time.Sleep(100 * time.Millisecond)
+		} else {
+			reply.Term = rf.currentTerm
+			reply.Success = false
+		}
+	}
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
+func (rf *Raft) goSendAppendEntries(server int) {
+	rf.rwmu.RLock()
+	args := AppendEntriesArgs{Term:rf.currentTerm, LeaderID:rf.me}
+	rf.rwmu.RUnlock()
+	reply := AppendEntriesReply{}
+	if rf.sendAppendEntries(server, &args, &reply) {
+		rf.rwmu.Lock()
+		defer rf.rwmu.Unlock()
+		if reply.Term > rf.currentTerm { // change to a follower
+			rf.state = 0
+			rf.currentTerm = reply.Term
+			rf.voteFor = -1
+			// i can not leave leader() immediately, because i might be in time.Sleep(100 * time.Millisecond)
+		} else {
+			if reply.Success == true {
+
+			} else {
+				
+			}
+		}
+	}
+}
 
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
+	Term int
+	CandidateID int
 }
 
 //
@@ -124,14 +277,55 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 //
 type RequestVoteReply struct {
-	// Your data here (2A).
+	Term int
+	VoteGranted bool
 }
 
 //
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
+	rf.resetFollowertimer()
+	rf.rwmu.Lock()
+	defer rf.rwmu.Unlock()
+	if rf.state == 0 {
+		if args.Term <= rf.currentTerm {
+			reply.Term = rf.currentTerm
+			reply.VoteGranted = false
+		} else {
+			reply.Term = args.Term
+			if (rf.upToDateDiscover()) {
+				rf.currentTerm = args.Term
+				rf.voteFor = args.CandidateID
+				reply.VoteGranted = true
+			}
+		}
+	} else if rf.state == 1 {
+		if args.Term <= rf.currentTerm {
+			reply.Term = rf.currentTerm
+			reply.VoteGranted = false
+		} else {
+			reply.Term = args.Term
+			if (rf.upToDateDiscover()) {
+				rf.currentTerm = reply.Term
+				rf.voteFor = args.CandidateID
+				reply.VoteGranted = true
+			}
+		}
+	} else {
+		if args.Term <= rf.currentTerm {
+			reply.Term = rf.currentTerm
+			reply.VoteGranted = false
+		} else {
+			reply.Term = args.Term
+			if (rf.upToDateDiscover()) {
+				rf.currentTerm = reply.Term
+				rf.state = 0
+				rf.voteFor = args.CandidateID
+				reply.VoteGranted = true
+			}
+		}
+	}
 }
 
 //
@@ -168,6 +362,27 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+func (rf *Raft) goSendRequestVote(server int) {
+	rf.rwmu.RLock()
+	args := RequestVoteArgs{Term:rf.currentTerm, CandidateID:rf.me}
+	rf.rwmu.RUnlock()
+	reply := RequestVoteReply{}
+	if rf.sendRequestVote(server, &args, &reply) {
+		rf.rwmu.Lock()
+		defer rf.rwmu.Unlock()
+		rf.muVote.Lock()
+		defer rf.muVote.Unlock()
+		rf.voterCount++
+		if reply.VoteGranted && rf.currentTerm == reply.Term{
+			rf.voteCount++
+		}
+		rf.currentTerm = reply.Term
+		if rf.voteCount > len(rf.peers) / 2 {
+			rf.state = 2
+			rf.gooffCadidatetimer()
+		}
+	}
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -232,12 +447,127 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-
-	// Your initialization code here (2A, 2B, 2C).
+	rf.currentTerm = 0
+	rf.voteFor = -1
+	rf.state = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	// the server start up as a follower
+	go rf.follower()
 
 	return rf
+}
+
+func (rf *Raft) setState(state int) {
+	rf.rwmu.Lock()
+	defer rf.rwmu.Unlock()
+	rf.state = state
+}
+
+func (rf *Raft) candidateNextState() int {
+	rf.rwmu.RLock()
+	defer rf.rwmu.RUnlock()
+	if rf.state == 2 {
+		go rf.leader()
+	}
+	if rf.state == 0 {
+		go rf.follower()
+	}
+	return rf.state
+}
+
+func (rf *Raft) leaderNextState() int {
+	rf.rwmu.RLock()
+	defer rf.rwmu.RUnlock()
+	if rf.state == 0 {
+		go rf.follower()
+	}
+	return rf.state
+}
+
+// the server is in this func as long as the server thinks he is a follower
+func (rf *Raft) follower() {
+
+	if rf.killed() {
+		return
+	}
+
+	rf.newFollowertimer()
+	defer rf.delFollowertimer()
+
+	// followertimer goes off
+	<-rf.followertimer.C
+	
+	rf.setState(1)
+
+	go rf.candidate()
+}
+
+// the server is in this func as long as the server thinks he is a candidate
+func (rf *Raft) candidate() {
+	rf.newCadidatetimer()
+	defer rf.delCadidatetimer()
+
+	for true {
+		if rf.killed() {
+			return
+		}
+
+		rf.rwmu.Lock()
+		prevCurrentTerm := rf.currentTerm
+		rf.currentTerm++
+		rf.voteFor = rf.me
+		rf.rwmu.Unlock()
+
+		rf.muVote.Lock()
+		rf.voteCount = 1 // I vote for myself
+		rf.voterCount = 1
+		rf.muVote.Unlock()
+		rf.resetCadidatetimer()
+
+		for i := 0; i < len(rf.peers); i++ {
+			if i != rf.me {
+				go rf.goSendRequestVote(i)
+			}
+		}
+
+		// cadidatetimer goes off
+		<-rf.cadidatetimer.C
+
+		if rf.candidateNextState() != 1 { //the server becomes a follower or a leader
+			break
+		}
+
+		rf.rwmu.Lock()
+		rf.muVote.Lock()
+		if rf.voterCount <= len(rf.peers) / 2 { // I might being isolated from others
+			rf.currentTerm = prevCurrentTerm
+		}
+		rf.muVote.Unlock()
+		rf.rwmu.Unlock()
+	}
+}
+
+// the server is in this func as long as the server thinks he is a leader
+func (rf *Raft) leader() {
+	for true {
+		if rf.killed() {
+			return
+		}
+
+		// heatbeats
+		for i := 0; i < len(rf.peers); i++ {
+			if i != rf.me {
+				go rf.goSendAppendEntries(i)
+			}
+		}
+
+		time.Sleep(100 * time.Millisecond) // 10 heartbeats per second
+
+		if rf.leaderNextState() != 2 { // the server becomes a follower
+			break
+		}
+	}
 }
