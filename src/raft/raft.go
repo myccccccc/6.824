@@ -212,6 +212,7 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term int // currentTerm, for leader to update itself
 	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	RequestedNextIndex int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -224,12 +225,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.voteFor = -1
 			}
 			rf.currentTerm = args.Term
-			// if legal {
-			//  reply.success = true
-			// 	append logs
-			// } else {
-			// 	reply.success = false
-			// }
 			if args.PrevLogIndex < 0 {
 				rf.log = args.Entries
 				reply.Success = true
@@ -238,10 +233,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 					rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
 					reply.Success = true
 				} else {
+					i := args.PrevLogIndex
+					t := rf.log[args.PrevLogIndex].Term
+					for ;i >= 0 && rf.log[i].Term == t; i-- {
+
+					}
 					reply.Success = false
+					reply.RequestedNextIndex = i+1
 				}
 			} else {
 				reply.Success = false
+				reply.RequestedNextIndex = 0
 			}
 			if args.LeaderCommit > rf.commitIndex {
 				rf.commitIndex = args.LeaderCommit
@@ -323,9 +325,7 @@ func (rf *Raft) goSendAppendEntries(server int) {
 					rf.cd.Signal()
 				}
 			} else {
-				if rf.nextIndex[server] > 0 {
-					rf.nextIndex[server]--
-				}
+				rf.nextIndex[server] = reply.RequestedNextIndex
 			}
 		}
 	} else {
