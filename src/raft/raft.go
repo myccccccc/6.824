@@ -122,8 +122,8 @@ type Raft struct {
 	matchIndex []int              // for each server, index of highest log entry known to be replicated on server
 
 	// persistent states
-	currentTerm int               // latest term server has seen (initialized to 0 on first boot, increases monotonically)
-	voteFor     int               // candidateId(peers index) that received vote in current term (or -1 if none)
+	CurrentTerm int               // latest term server has seen (initialized to 0 on first boot, increases monotonically)
+	VoteFor     int               // candidateId(peers index) that received vote in current term (or -1 if none)
 
 	// others previously declared as global var
 	muVote sync.Mutex
@@ -142,7 +142,7 @@ type Raft struct {
 func (rf *Raft) GetState() (int, bool) {
 	rf.rwmu.RLock()
 	defer rf.rwmu.RUnlock()
-	return rf.currentTerm, rf.state == 2
+	return rf.CurrentTerm, rf.state == 2
 }
 
 //
@@ -219,12 +219,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.rwmu.Lock()
 	defer rf.rwmu.Unlock()
 	if rf.state == 0 { // currently follower
-		if rf.currentTerm <= args.Term {
+		if rf.CurrentTerm <= args.Term {
 			rf.resetFollowertimer()
-			if rf.currentTerm < args.Term {
-				rf.voteFor = -1
+			if rf.CurrentTerm < args.Term {
+				rf.VoteFor = -1
 			}
-			rf.currentTerm = args.Term
+			rf.CurrentTerm = args.Term
 			if args.PrevLogIndex < 0 {
 				rf.log = args.Entries
 				reply.Success = true
@@ -250,31 +250,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.cd.Signal()
 			}
 		} else {
-			reply.Term = rf.currentTerm
+			reply.Term = rf.CurrentTerm
 			reply.Success = false
 		}
 	} else if rf.state == 1 { // currently candidate
-		if rf.currentTerm <= args.Term {
-			if rf.currentTerm < args.Term {
-				rf.voteFor = -1
+		if rf.CurrentTerm <= args.Term {
+			if rf.CurrentTerm < args.Term {
+				rf.VoteFor = -1
 			}
 			rf.state = 0 // change to a follower
-			rf.currentTerm = args.Term
+			rf.CurrentTerm = args.Term
 			reply.Success = false // since i am currently a candidate, I am going to ignore the log entries this rpc is currying, even if it is legal for me to append the log entries
 			rf.gooffCadidatetimer() // timer in the candidate() goes off immediately, so leave candidate() immediately
 		} else {
-			reply.Term = rf.currentTerm
+			reply.Term = rf.CurrentTerm
 			reply.Success = false
 		}
 	} else { // currently leader
-		if rf.currentTerm <= args.Term { // actually it's impossible to have 2 leader (I and the rpc sender) with the same term (=)
+		if rf.CurrentTerm <= args.Term { // actually it's impossible to have 2 leader (I and the rpc sender) with the same term (=)
 			rf.state = 0 // change to a follower
-			rf.currentTerm = args.Term
-			rf.voteFor = -1
+			rf.CurrentTerm = args.Term
+			rf.VoteFor = -1
 			reply.Success = false // since i am currently a leader, I am going to ignore the log entries this rpc is currying, even if it is legal for me to append the log entries
 			// i can not leave leader() immediately, because i might be in time.Sleep(100 * time.Millisecond)
 		} else {
-			reply.Term = rf.currentTerm
+			reply.Term = rf.CurrentTerm
 			reply.Success = false
 		}
 	}
@@ -287,7 +287,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 func (rf *Raft) goSendAppendEntries(server int) {
 	rf.rwmu.RLock()
-	args := AppendEntriesArgs{Term:rf.currentTerm, LeaderID:rf.me}
+	args := AppendEntriesArgs{Term:rf.CurrentTerm, LeaderID:rf.me}
 	if (rf.commitIndex < rf.matchIndex[server]) {
 		args.LeaderCommit = rf.commitIndex
 	} else {
@@ -305,10 +305,10 @@ func (rf *Raft) goSendAppendEntries(server int) {
 	if rf.sendAppendEntries(server, &args, &reply) {
 		rf.rwmu.Lock()
 		defer rf.rwmu.Unlock()
-		if reply.Term > rf.currentTerm { // change to a follower
+		if reply.Term > rf.CurrentTerm { // change to a follower
 			rf.state = 0
-			rf.currentTerm = reply.Term
-			rf.voteFor = -1
+			rf.CurrentTerm = reply.Term
+			rf.VoteFor = -1
 			// i can not leave leader() immediately, because i might be in time.Sleep(100 * time.Millisecond)
 		} else {
 			if reply.Success == true {
@@ -363,39 +363,39 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.rwmu.Lock()
 	defer rf.rwmu.Unlock()
 	if rf.state == 0 {
-		if args.Term <= rf.currentTerm {
-			reply.Term = rf.currentTerm
+		if args.Term <= rf.CurrentTerm {
+			reply.Term = rf.CurrentTerm
 			reply.VoteGranted = false
 		} else {
 			reply.Term = args.Term
 			if (rf.upToDateDiscover(args)) {
-				rf.currentTerm = args.Term
-				rf.voteFor = args.CandidateID
+				rf.CurrentTerm = args.Term
+				rf.VoteFor = args.CandidateID
 				reply.VoteGranted = true
 			}
 		}
 	} else if rf.state == 1 {
-		if args.Term <= rf.currentTerm {
-			reply.Term = rf.currentTerm
+		if args.Term <= rf.CurrentTerm {
+			reply.Term = rf.CurrentTerm
 			reply.VoteGranted = false
 		} else {
 			reply.Term = args.Term
 			if (rf.upToDateDiscover(args)) {
-				rf.currentTerm = reply.Term
-				rf.voteFor = args.CandidateID
+				rf.CurrentTerm = reply.Term
+				rf.VoteFor = args.CandidateID
 				reply.VoteGranted = true
 			}
 		}
 	} else {
-		if args.Term <= rf.currentTerm {
-			reply.Term = rf.currentTerm
+		if args.Term <= rf.CurrentTerm {
+			reply.Term = rf.CurrentTerm
 			reply.VoteGranted = false
 		} else {
 			reply.Term = args.Term
 			if (rf.upToDateDiscover(args)) {
-				rf.currentTerm = reply.Term
+				rf.CurrentTerm = reply.Term
 				rf.state = 0
-				rf.voteFor = args.CandidateID
+				rf.VoteFor = args.CandidateID
 				reply.VoteGranted = true
 			}
 		}
@@ -438,7 +438,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) goSendRequestVote(server int) {
 	rf.rwmu.RLock()
-	args := RequestVoteArgs{Term:rf.currentTerm, CandidateID:rf.me, LastLogIndex:len(rf.log)-1}
+	args := RequestVoteArgs{Term:rf.CurrentTerm, CandidateID:rf.me, LastLogIndex:len(rf.log)-1}
 	if len(rf.log) - 1 >= 0 {
 		args.LastLogTerm = rf.log[len(rf.log)-1].Term
 	} else {
@@ -452,10 +452,10 @@ func (rf *Raft) goSendRequestVote(server int) {
 		rf.muVote.Lock()
 		defer rf.muVote.Unlock()
 		rf.voterCount++
-		if reply.VoteGranted && rf.currentTerm == reply.Term{
+		if reply.VoteGranted && rf.CurrentTerm == reply.Term{
 			rf.voteCount++
 		}
-		rf.currentTerm = reply.Term
+		rf.CurrentTerm = reply.Term
 		if rf.voteCount > len(rf.peers) / 2 {
 			rf.state = 2
 			rf.gooffCadidatetimer()
@@ -488,12 +488,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.state != 2 {
 		isLeader = false
 	} else {
-		newLogEntry := logEntry{Commend:command, Term:rf.currentTerm}
+		newLogEntry := logEntry{Commend:command, Term:rf.CurrentTerm}
 		rf.log = append(rf.log, newLogEntry)
 		rf.matchIndex[rf.me] = len(rf.log) - 1
 		rf.nextIndex[rf.me] = len(rf.log)
 		index = len(rf.log) - 1
-		term = rf.currentTerm
+		term = rf.CurrentTerm
 		isLeader = true
 	}
 	return index, term, isLeader
@@ -537,8 +537,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.currentTerm = 0
-	rf.voteFor = -1
+	rf.CurrentTerm = 0
+	rf.VoteFor = -1
 	rf.state = 0
 	rf.applyCh = applyCh
 	rf.commitIndex = -1
@@ -630,7 +630,7 @@ func (rf *Raft) candidate() {
 	defer rf.delCadidatetimer()
 
 	rf.rwmu.Lock()
-	prevCurrentTerm := rf.currentTerm
+	prevCurrentTerm := rf.CurrentTerm
 	rf.rwmu.Unlock()
 
 	for true {
@@ -639,8 +639,8 @@ func (rf *Raft) candidate() {
 		}
 
 		rf.rwmu.Lock()
-		rf.currentTerm++
-		rf.voteFor = rf.me
+		rf.CurrentTerm++
+		rf.VoteFor = rf.me
 		rf.rwmu.Unlock()
 
 		rf.muVote.Lock()
@@ -665,7 +665,7 @@ func (rf *Raft) candidate() {
 		rf.rwmu.Lock()
 		rf.muVote.Lock()
 		if rf.voterCount <= len(rf.peers) / 2 { // I might being isolated from others
-			rf.currentTerm = prevCurrentTerm - 1
+			rf.CurrentTerm = prevCurrentTerm - 1
 		}
 		rf.muVote.Unlock()
 		rf.rwmu.Unlock()
@@ -675,7 +675,7 @@ func (rf *Raft) candidate() {
 // the server is in this func as long as the server thinks he is a leader
 func (rf *Raft) leader() {
 	rf.rwmu.Lock()
-	newLogEntry := logEntry{Commend:nil, Term:rf.currentTerm} //see section 5.4.2 and 8
+	newLogEntry := logEntry{Commend:nil, Term:rf.CurrentTerm} //see section 5.4.2 and 8
 	rf.log = append(rf.log, newLogEntry)
 	for i := 0; i < len(rf.peers); i++ {
 		rf.matchIndex[i] = -1
