@@ -522,7 +522,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		index = len(rf.Log) - 1
 		term = rf.CurrentTerm
 		isLeader = true
-		// DPrintf("leader %v term %v accept cmd %v at index %v\n", rf.me, rf.CurrentTerm, command, index)
+		DPrintf("leader %v term %v accept cmd %v at index %v\n", rf.me, rf.CurrentTerm, command, index)
 	}
 	return index, term, isLeader
 }
@@ -636,7 +636,7 @@ func (rf *Raft) leaderNextState() int {
 
 // the server is in this func as long as the server thinks he is a follower
 func (rf *Raft) follower() {
-	// DPrintf("follower %v term %v\n", rf.me, rf.CurrentTerm)
+	DPrintf("follower %v term %v\n", rf.me, rf.CurrentTerm)
 
 	if rf.killed() {
 		return
@@ -678,7 +678,7 @@ func (rf *Raft) candidate() {
 		rf.voterCount = 1
 		rf.muVote.Unlock()
 		rf.resetCadidatetimer()
-		// DPrintf("candidate %v term %v\n", rf.me, rf.CurrentTerm)
+		DPrintf("candidate %v term %v\n", rf.me, rf.CurrentTerm)
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				go rf.goSendRequestVote(i)
@@ -705,7 +705,7 @@ func (rf *Raft) candidate() {
 
 // the server is in this func as long as the server thinks he is a leader
 func (rf *Raft) leader() {
-	// DPrintf("leader %v term %v\n", rf.me, rf.CurrentTerm)
+	DPrintf("leader %v term %v\n", rf.me, rf.CurrentTerm)
 	rf.rwmu.Lock()
 	newLogEntry := logEntry{Commend:nil, Term:rf.CurrentTerm} //see section 5.4.2 and 8
 	rf.Log = append(rf.Log, newLogEntry)
